@@ -1,0 +1,216 @@
+-- ====================================================================
+-- HEALTHCARE DATA ANALYTICS PROJECT: MASTER SCRIPT PIPELINE
+-- Target Database: PostgreSQL
+-- Interface Management: pgAdmin
+-- Author: Achuo Ransom Kelly (Creative Tech Data Academy - CtDA)
+-- Description: Complete unified script containing Schema Design, 
+--              Data Exploration, Cleaning, Aggregations, Time-Series 
+--              Analysis, Window Functions, and Dashboard Views.
+-- ====================================================================
+
+-- ====================================================================
+-- PHASE 1: DATABASE SCHEMA & CORE TABLE DDL
+-- ====================================================================
+
+-- Drop table if it already exists to allow for clean re-runs
+DROP TABLE IF EXISTS patients CASCADE;
+
+-- Create the foundational data table
+CREATE TABLE patients (
+    patient_id         SERIAL PRIMARY KEY,
+    name               VARCHAR(100),
+    age                INTEGER,
+    gender             VARCHAR(10),
+    blood_type         VARCHAR(5),
+    medical_condition  VARCHAR(50),
+    date_of_admission  DATE,
+    doctor             VARCHAR(100),
+    hospital           VARCHAR(150),
+    insurance_provider VARCHAR(100),
+    billing_amount     NUMERIC(12,2),
+    room_number        INTEGER,
+    admission_type     VARCHAR(20),
+    discharge_date     DATE,
+    medication         VARCHAR(100),
+    test_results       VARCHAR(20)
+);
+
+-- NOTE: At this stage in your workflow, you should use pgAdmin's 
+-- Import tool to load the 'healthcare_dataset.csv' into the table.
+
+-- ====================================================================
+-- PHASE 2: BASELINE DATA EXPLORATION
+-- ====================================================================
+
+-- 1. Check total record counts (Expected: ~10,000 rows)
+SELECT COUNT(*) AS total_records FROM patients;
+
+-- 2. Preview data structure
+SELECT * FROM patients LIMIT 10;
+
+-- 3. Check for NULL/missing values in key structural columns
+SELECT 
+    COUNT(*) - COUNT(patient_id) AS missing_ids,
+    COUNT(*) - COUNT(name) AS missing_names,
+    COUNT(*) - COUNT(medical_condition) AS missing_conditions,
+    COUNT(*) - COUNT(billing_amount) AS missing_billing
+FROM patients;
+
+-- 4. Inspect unique distinct values for categorical attributes
+SELECT DISTINCT medical_condition FROM patients;
+SELECT DISTINCT admission_type FROM patients;
+
+
+-- ====================================================================
+-- PHASE 3: DATA CLEANING & STRUCTURAL ADJUSTMENTS
+-- ====================================================================
+
+-- 1. Standardize Text Formatting (Remove extra trailing spaces and fix casing errors)
+UPDATE patients
+SET 
+    medical_condition = TRIM(INITCAP(medical_condition)),
+    insurance_provider = TRIM(INITCAP(insurance_provider)),
+    hospital = TRIM(hospital);
+
+-- 2. Audit Temporal Consistency (Identify logical error rows where discharge occurs before admission)
+SELECT patient_id, name, date_of_admission, discharge_date
+FROM patients
+WHERE discharge_date < date_of_admission;
+
+-- 3. Inject Calculated Optimization Field for Analytics
+ALTER TABLE patients ADD COLUMN length_of_stay INTEGER;
+
+-- 4. Calculate and Populate Length of Stay (Days between Admission and Discharge)
+UPDATE patients
+SET length_of_stay = discharge_date - date_of_admission;
+
+
+-- ====================================================================
+-- PHASE 4: DESCRIPIVE GROUP AGGREGATIONS
+-- ====================================================================
+
+-- 1. Volume and Financial Footprints grouped by Medical Condition
+SELECT 
+    medical_condition,
+    COUNT(*) AS total_cases,
+    ROUND(AVG(billing_amount), 2) AS average_billing,
+    SUM(billing_amount) AS total_revenue
+FROM patients
+GROUP BY medical_condition
+ORDER BY total_cases DESC;
+
+-- 2. High-Level Patient Volume & Length of Stay metrics across Hospitals
+SELECT 
+    hospital,
+    COUNT(*) AS total_patients,
+    ROUND(AVG(length_of_stay), 1) AS avg_days_spent
+FROM patients
+GROUP BY hospital
+ORDER BY total_patients DESC;
+
+-- 3. Patient Segmentation (Gender distribution across medical conditions)
+SELECT 
+    medical_condition,
+    SUM(CASE WHEN gender = 'Male' THEN 1 ELSE 0 END) AS male_cases,
+    SUM(CASE WHEN gender = 'Female' THEN 1 ELSE 0 END) AS female_cases
+FROM patients
+GROUP BY medical_condition;
+
+
+-- ====================================================================
+-- PHASE 5: CHRONOLOGICAL TIME-SERIES TREND ANALYSIS
+-- ====================================================================
+
+-- 1. Track Yearly Trajectory Trends
+SELECT 
+    EXTRACT(YEAR FROM date_of_admission) AS admission_year,
+    COUNT(*) AS total_admissions
+FROM patients
+GROUP BY admission_year
+ORDER BY admission_year;
+
+-- 2. Identify Monthly Seasonal Demand Spikes
+SELECT 
+    TO_CHAR(date_of_admission, 'Month') AS admission_month,
+    COUNT(*) AS total_admissions
+FROM patients
+GROUP BY EXTRACT(MONTH FROM date_of_admission), TO_CHAR(date_of_admission, 'Month')
+ORDER BY EXTRACT(MONTH FROM date_of_admission);
+
+-- 3. Discover Busiest Weekdays for Operational Planning
+SELECT 
+    TO_CHAR(date_of_admission, 'Day') AS day_of_week,
+    COUNT(*) AS total_admissions
+FROM patients
+GROUP BY EXTRACT(ISODOW FROM date_of_admission), TO_CHAR(date_of_admission, 'Day')
+ORDER BY EXTRACT(ISODOW FROM date_of_admission);
+
+
+-- ====================================================================
+-- PHASE 6: ADVANCED WINDOW FUNCTION ENGINE
+-- ====================================================================
+
+-- 1. Rank Patients by Invoice Cost within Each Specific Hospital Group
+SELECT 
+    hospital,
+    name AS patient_name,
+    billing_amount,
+    RANK() OVER (PARTITION BY hospital ORDER BY billing_amount DESC) AS billing_rank
+FROM patients;
+
+-- 2. Generate a Running Total of Gross Network Inflow over Time
+SELECT 
+    date_of_admission,
+    patient_id,
+    billing_amount,
+    SUM(billing_amount) OVER (ORDER BY date_of_admission, patient_id) AS cumulative_revenue
+FROM patients;
+
+-- 3. Compute Patient Proportional Financial Contribution vs. Local Hospital Totals
+WITH HospitalTotal CTE AS (
+    SELECT 
+        patient_id,
+        hospital,
+        billing_amount,
+        SUM(billing_amount) OVER (PARTITION BY hospital) AS total_hospital_billing
+    )
+SELECT 
+    patient_id,
+    hospital,
+    billing_amount,
+    ROUND((billing_amount / total_hospital_billing) * 100, 2) AS percent_of_hospital_revenue
+FROM HospitalTotal
+ORDER BY hospital, billing_amount DESC;
+
+
+-- ====================================================================
+-- PHASE 7: VIRTUAL DDL REPORTING LAYERS (VIEWS FOR DASHBOARDS)
+-- ====================================================================
+
+-- Drop existing views if they are present
+DROP VIEW IF EXISTS vw_condition_summary;
+DROP VIEW IF EXISTS vw_hospital_summary;
+
+-- 1. Deploy Clean View for Medical Condition Dashboard Charts
+CREATE VIEW vw_condition_summary AS
+SELECT
+    medical_condition,
+    COUNT(*)                       AS total_cases,
+    ROUND(AVG(billing_amount), 2)  AS avg_billing,
+    ROUND(AVG(length_of_stay), 1)  AS avg_stay_days
+FROM patients
+GROUP BY medical_condition;
+
+-- 2. Deploy Clean View for Hospital Performance Mapping Charts
+CREATE VIEW vw_hospital_summary AS
+SELECT
+    hospital,
+    COUNT(*)                       AS total_patients,
+    ROUND(AVG(billing_amount), 2)  AS avg_billing,
+    ROUND(AVG(length_of_stay), 1)  AS avg_stay_days
+FROM patients
+GROUP BY hospital;
+
+-- Verify Views were properly mapped to database catalog
+SELECT * FROM vw_condition_summary;
+
